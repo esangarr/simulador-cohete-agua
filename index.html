@@ -52,7 +52,7 @@ function simulate(p) {
     const m = p.m + RHOW * Vw;
     const v = Math.hypot(vx, vy);
     const dx = v > 0.3 ? vx / v : Math.cos(th), dy = v > 0.3 ? vy / v : Math.sin(th);
-    const drag = 0.5 * RHOA * p.cd * Ab * v * v;
+    const drag = 0.5 * RHOA * p.cd * Math.PI * (p.Dc / 2) ** 2 * v * v;   // arrastre con Ac
     let ax = (thrust - drag) * dx / m, ay = (thrust - drag) * dy / m - G;
     if (!launched && ay <= 0) {            // el cohete aún no despega
       if (Vw <= 0) break;
@@ -165,14 +165,18 @@ function Chart({ r, tAnim, clk, theta }) {
       h('text', { x: 40, y: 36, fill: '#e6eef7', fontSize: 11 }, 'Vuelo libre y caída')));
 }
 
-const DEF = { Vw: 0.7, P0: 300, Vb: 2.0, m: 0.15, D: 0.09, de: 0.022, cd: 0.4, theta: 60 };
+const DEF = { Vw: 0.7, P0: 300, Vb: 2.0, m: 0.15, D: 0.09, Dc: 0.09, de: 0.022, cd: 0.4, theta: 60 };
 const toSim = q => ({ ...q, Vw: q.Vw * 0.001, Vb: q.Vb * 0.001 });
 const VARS = [
   { k: 'P0', label: 'Presión inicial', unit: 'kPa', min: 100, max: 400, f: 1 },
   { k: 'Vw', label: 'Volumen de agua', unit: 'L', min: 0.1, max: 2.0, f: 1 },
   { k: 'theta', label: 'Ángulo de lanzamiento', unit: '°', min: 10, max: 90, f: 1 },
   { k: 'de', label: 'Diámetro de la boquilla', unit: 'mm', min: 0.005, max: 0.03, f: 1000 },
-  { k: 'm', label: 'Masa del cohete vacío', unit: 'kg', min: 0.05, max: 0.6, f: 1 }];
+  { k: 'm', label: 'Masa seca', unit: 'kg', min: 0.05, max: 0.6, f: 1 },
+  { k: 'Vb', label: 'Volumen total de la botella', unit: 'L', min: 1, max: 3, f: 1 },
+  { k: 'Dc', label: 'Diámetro del cohete (Ac)', unit: 'mm', min: 0.04, max: 0.15, f: 1000 },
+  { k: 'cd', label: 'Coeficiente de arrastre', unit: '', min: 0.2, max: 0.9, f: 1 }];
+const OUTS = [{ k: 'hmax', label: 'Altura máxima', unit: 'm' }, { k: 'range', label: 'Distancia de vuelo', unit: 'm' }, { k: 'vmax', label: 'Velocidad máxima', unit: 'm/s' }];
 const tick0 = () => new Promise(res => setTimeout(res, 0));
 const fmt = v => Number(v.toPrecision(3));
 const selCls = 'rounded bg-slate-800 border border-slate-600 px-2 py-1 text-sm text-slate-100 focus:outline-none focus:ring-1 focus:ring-sky-400';
@@ -198,7 +202,7 @@ function Plot({ data, color, xl, yl, dots, cursor, H = 200 }) {
 
 function App() {
   const [p, setP] = useState(DEF);
-  const [swVar, setSwVar] = useState('P0'), [sw, setSw] = useState(null), [swBusy, setSwBusy] = useState(false);
+  const [swVar, setSwVar] = useState('P0'), [swOut, setSwOut] = useState('hmax'), [sw, setSw] = useState(null), [swBusy, setSwBusy] = useState(false);
   const [obj, setObj] = useState('hmax'), [iters, setIters] = useState(100), [best, setBest] = useState(null), [opBusy, setOpBusy] = useState(false), [prog, setProg] = useState(0);
   const [tAnim, setTAnim] = useState(null);
   const [clk, setClk] = useState(0);
@@ -222,19 +226,19 @@ function App() {
   const f = (v, d = 2) => v.toFixed(d);
   const reset = () => { cancelAnimationFrame(raf.current); setP(DEF); setTAnim(null); };
   const runSweep = async () => {
-    setSwBusy(true); const v = VARS.find(a => a.k === swVar), N = 30, out = [];
+    setSwBusy(true); const v = VARS.find(a => a.k === swVar), o = OUTS.find(a => a.k === swOut), N = 30, out = [];
     for (let i = 0; i < N; i++) {
       const val = v.min + (v.max - v.min) * i / (N - 1);
-      out.push({ x: val * v.f, y: simulate(toSim({ ...p, [v.k]: val })).hmax });
-      if (i % 6 === 5) { setSw({ v, data: [...out] }); await tick0(); }
+      out.push({ x: val * v.f, y: simulate(toSim({ ...p, [v.k]: val }))[o.k] });
+      if (i % 6 === 5) { setSw({ v, o, data: [...out] }); await tick0(); }
     }
-    setSw({ v, data: out }); setSwBusy(false);
+    setSw({ v, o, data: out }); setSwBusy(false);
   };
   const runOpt = async () => {
     setOpBusy(true); setProg(0);
     const n = Math.max(10, Math.min(1000, Math.round(iters) || 100)), rnd = (a, b) => a + Math.random() * (b - a);
     const B = { P0: [100, 400], Vw: [0.1, Math.min(2, 0.95 * p.Vb)], de: [0.005, 0.03], theta: [10, 90] };
-    const score = c => { const o = simulate(toSim({ ...p, ...c })); return obj === 'hmax' ? o.hmax : o.range; };
+    const score = c => { const o = simulate(toSim({ ...p, ...c })); return o[obj]; };
     let bst = null;
     for (let i = 0; i < n; i++) {
       const c = {}, explore = i < n * 0.5 || !bst;
@@ -247,23 +251,24 @@ function App() {
   const applyBest = () => { setP(o => ({ ...o, ...best.c })); setTAnim(null); };
   const btn = 'rounded-lg font-bold px-4 py-2 transition-colors disabled:opacity-50 focus:outline-none focus:ring-2 focus:ring-white';
   const expCard = h(Group, { title: 'Modo Experimento', color: '#c4b5fd' },
-    h('p', { className: 'text-sm text-slate-400 mb-3' }, 'Varía una variable en todo su rango (30 pasos) y calcula la altura máxima en cada paso. Las demás variables usan los valores actuales.'),
+    h('p', { className: 'text-sm text-slate-400 mb-3' }, 'Cambia una sola variable de entrada en todo su rango (30 pasos) y grafica la salida elegida. Las demás variables se mantienen constantes en sus valores actuales.'),
     h('div', { className: 'flex flex-wrap gap-2 mb-3' },
       h('select', { className: selCls, value: swVar, onChange: e => { setSwVar(e.target.value); setSw(null); } }, VARS.map(v => h('option', { key: v.k, value: v.k }, v.label))),
+      h('select', { className: selCls, value: swOut, onChange: e => { setSwOut(e.target.value); setSw(null); } }, OUTS.map(o => h('option', { key: o.k, value: o.k }, o.label))),
       h('button', { onClick: runSweep, disabled: swBusy, className: btn + ' bg-violet-500 hover:bg-violet-400 text-slate-900' }, swBusy ? 'Calculando…' : 'Ejecutar barrido')),
-    sw ? h(Plot, { data: sw.data, color: '#c4b5fd', dots: true, H: 230, xl: `${sw.v.label} (${sw.v.unit})`, yl: 'Altura máxima (m)' }) : h('div', { className: 'text-slate-500 text-sm py-10 text-center' }, 'Elige una variable y ejecuta el barrido.'));
+    sw ? h(Plot, { data: sw.data, color: '#c4b5fd', dots: true, H: 230, xl: `${sw.v.label} (${sw.v.unit})`, yl: `${sw.o.label} (${sw.o.unit})` }) : h('div', { className: 'text-slate-500 text-sm py-10 text-center' }, 'Elige una variable y ejecuta el barrido.'));
   const bl = best && [['Presión', f(best.c.P0, 0) + ' kPa'], ['Agua', f(best.c.Vw, 2) + ' L'], ['Boquilla', f(best.c.de * 1000, 1) + ' mm'], ['Ángulo', f(best.c.theta, 1) + '°']];
   const optCard = h(Group, { title: 'Modo Optimización', color: '#a3e635' },
     h('p', { className: 'text-sm text-slate-400 mb-3' }, 'Búsqueda Monte Carlo: la primera mitad explora al azar y la segunda refina alrededor del mejor resultado. Optimiza presión, agua, boquilla y ángulo; masa, botella y Cd quedan como están.'),
     h('div', { className: 'flex flex-wrap items-center gap-2 mb-3' },
-      h('select', { className: selCls, value: obj, onChange: e => setObj(e.target.value) }, h('option', { value: 'hmax' }, 'Maximizar altura'), h('option', { value: 'range' }, 'Maximizar distancia')),
+      h('select', { className: selCls, value: obj, onChange: e => setObj(e.target.value) }, h('option', { value: 'hmax' }, 'Maximizar altura'), h('option', { value: 'range' }, 'Maximizar distancia'), h('option', { value: 'vmax' }, 'Maximizar velocidad máxima')),
       h('label', { className: 'text-sm text-slate-300 flex items-center gap-2' }, 'Iteraciones',
         h('input', { type: 'number', min: 10, max: 1000, step: 10, value: iters, onChange: e => setIters(parseInt(e.target.value) || 0), className: selCls + ' mono w-20 text-right' })),
       h('button', { onClick: runOpt, disabled: opBusy, className: btn + ' bg-lime-500 hover:bg-lime-400 text-slate-900' }, opBusy ? `Buscando ${Math.round(prog * 100)}%` : 'Buscar óptimo')),
     best ? h('div', { className: 'rounded-lg bg-slate-950/60 border border-lime-500/40 p-4' },
       h('div', { className: 'font-bold text-lime-300 mb-2' }, 'Mejor configuración encontrada'),
       h('div', { className: 'grid grid-cols-2 gap-x-4 gap-y-1 mono text-sm mb-3' }, bl.map(([a, b]) => h('div', { key: a, className: 'flex justify-between' }, h('span', { className: 'text-slate-400' }, a), h('span', null, b)))),
-      h('div', { className: 'text-slate-300 text-sm' }, best.obj === 'hmax' ? 'Altura máxima alcanzada: ' : 'Distancia máxima alcanzada: ', h('span', { className: 'mono text-xl font-bold text-lime-300' }, f(best.sc, 1) + ' m')),
+      h('div', { className: 'text-slate-300 text-sm' }, (OUTS.find(a => a.k === best.obj).label) + ' alcanzada: ', h('span', { className: 'mono text-xl font-bold text-lime-300' }, f(best.sc, 1) + ' ' + OUTS.find(a => a.k === best.obj).unit)),
       h('button', { onClick: applyBest, className: btn + ' mt-3 border border-lime-500 text-lime-300 hover:bg-lime-500/10 text-sm py-1' }, 'Aplicar al simulador'))
     : h('div', { className: 'text-slate-500 text-sm py-10 text-center' }, 'Aún no hay resultados.'));
   const ts = (k) => r.pts.map(q => ({ x: q.t, y: q[k] }));
@@ -280,11 +285,13 @@ function App() {
           h(Slider, { label: 'Presión manométrica inicial (P₀)', unit: 'kPa', v: p.P0, min: 100, max: 400, step: 10, set: set('P0') }),
           r.clamped && h('p', { className: 'text-xs text-amber-300' }, 'El agua ocupa casi toda la botella; se limita al 95 % del volumen para dejar aire.')),
         h(Group, { title: 'Estructura del cohete', color: '#fb923c' },
-          h(Slider, { label: 'Volumen de la botella', unit: 'L', v: p.Vb, min: 1, max: 3, step: 0.25, set: set('Vb') }),
+          h(Slider, { label: 'Volumen total de la botella (Vtot)', unit: 'L', v: p.Vb, min: 1, max: 3, step: 0.25, set: set('Vb') }),
           h(Slider, { label: 'Masa del cohete vacío', unit: 'kg', v: p.m, min: 0.05, max: 0.6, step: 0.01, set: set('m') }),
-          h(Slider, { label: 'Diámetro de la botella', unit: 'mm', v: p.D * 1000, min: 60, max: 120, step: 1, set: v => set('D')(v / 1000) }),
+          h(Slider, { label: 'Diámetro de la botella (Ab, Bernoulli)', unit: 'mm', v: p.D * 1000, min: 60, max: 120, step: 1, set: v => set('D')(v / 1000) }),
           h(Slider, { label: 'Diámetro de la boquilla', unit: 'mm', v: p.de * 1000, min: 5, max: 30, step: 0.5, set: v => set('de')(v / 1000) }),
           h('p', { className: 'text-xs text-slate-400 mb-3 mono' }, `Área de boquilla Ae = ${f(Math.PI * (p.de * 500) ** 2, 1)} mm²`),
+          h(Slider, { label: 'Diámetro del cohete (Ac)', unit: 'mm', v: p.Dc * 1000, min: 40, max: 150, set: v => set('Dc')(v / 1000) }),
+          h('p', { className: 'text-xs text-slate-400 mb-3 mono' }, `Área transversal Ac = ${f(Math.PI * (p.Dc * 500) ** 2 / 100, 1)} cm²`),
           h(Slider, { label: 'Coeficiente de arrastre (Cd)', unit: '', v: p.cd, min: 0.2, max: 0.9, step: 0.05, set: set('cd') })),
         h(Group, { title: 'Lanzamiento', color: '#a3e635' },
           h(Slider, { label: 'Ángulo de lanzamiento (θ)', unit: '°', v: p.theta, min: 10, max: 90, step: 1, set: set('theta') }),
@@ -301,9 +308,10 @@ function App() {
           h(Stat, { label: 'Duración del empuje', value: f(r.tBurn, 3), unit: 's', color: '#fb923c' }),
           h(Stat, { label: 'Velocidad máxima', value: f(r.vmax, 1), unit: 'm/s', color: '#c4b5fd' })),
         h(Chart, { r, tAnim, clk, theta: p.theta }),
-        h('div', { className: 'grid md:grid-cols-3 gap-3 mt-4' },
+        h('div', { className: 'grid md:grid-cols-2 gap-3 mt-4' },
           mini('Altura vs. tiempo', h(Plot, { data: ts('y'), color: '#facc15', xl: 'Tiempo (s)', yl: 'Altura (m)', cursor: tAnim })),
           mini('Velocidad vs. tiempo', h(Plot, { data: ts('v'), color: '#a3e635', xl: 'Tiempo (s)', yl: 'Velocidad (m/s)', cursor: tAnim })),
+          mini('Distancia vs. tiempo', h(Plot, { data: ts('x'), color: '#f87171', xl: 'Tiempo (s)', yl: 'Distancia (m)', cursor: tAnim })),
           mini('Empuje vs. tiempo (propulsión)', h(Plot, { data: thrustData, color: '#fb923c', xl: 'Tiempo (s)', yl: 'Empuje (N)', cursor: tAnim }))),
         h('div', { className: 'rounded-xl bg-slate-900/70 p-4 mt-4 text-sm text-slate-300 leading-relaxed' },
           h('h3', { className: 'font-bold text-sky-200 mb-2' }, 'Qué calcula el simulador'),
