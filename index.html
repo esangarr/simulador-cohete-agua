@@ -1,0 +1,228 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Simulador de cohete de agua</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<style>
+  :root{box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+  html{scroll-padding-top:env(safe-area-inset-top,0px)}
+  body{background:#0b1a2b;color:#e6eef7;font-family:"Trebuchet MS","Segoe UI",system-ui,sans-serif}
+  .mono{font-family:"Courier New",ui-monospace,monospace}
+  input[type=range]{accent-color:#38bdf8}
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script>
+const { useState, useMemo, useEffect, useRef } = React;
+const h = React.createElement;
+
+// ---------- Física (modelo de Prusa, 2000) ----------
+const G = 9.81, RHOW = 1000, RHOA = 1.2, PATM = 101325, GAM = 1.4;
+
+function simulate(p) {
+  const Ab = Math.PI * (p.D / 2) ** 2;       // sección de la botella
+  const Ae = Math.PI * (p.de / 2) ** 2;      // sección de la boquilla
+  const Vb = p.Vb, Vw0 = Math.min(p.Vw, 0.95 * Vb);
+  const Va0 = Vb - Vw0;                       // volumen inicial de aire
+  const P0 = PATM + p.P0 * 1000;              // presión absoluta inicial
+  const th = p.theta * Math.PI / 180;
+  const k = 1 - (Ae / Ab) ** 2;
+  let x = 0, y = 0, vx = 0, vy = 0, Vw = Vw0, t = 0, launched = false;
+  let hmax = 0, tApex = 0, vmax = 0, Fmax = 0, tBurn = null, ve0 = 0, apex = { x: 0, y: 0 };
+  const pts = []; let lastPush = -1, impact = false;
+  const ve_init = Math.sqrt(2 * (P0 - PATM) / (RHOW * k));
+  ve0 = ve_init;
+  while (t < 120) {
+    let thrust = 0;
+    const dt = Vw > 0 ? 0.0005 : 0.002;
+    if (Vw > 0) {
+      const P = P0 * Math.pow(Va0 / (Vb - Vw), GAM);        // expansión adiabática del aire
+      if (P > PATM) {
+        const ve = Math.sqrt(2 * (P - PATM) / (RHOW * k));  // Bernoulli
+        thrust = RHOW * Ae * ve * ve;                       // empuje = flujo másico * ve
+        Vw -= Ae * ve * dt;                                 // conservación de la masa
+      } else Vw = 0;
+      if (Vw <= 0) { Vw = 0; tBurn = t; }
+    }
+    const m = p.m + RHOW * Vw;
+    const v = Math.hypot(vx, vy);
+    const dx = v > 0.3 ? vx / v : Math.cos(th), dy = v > 0.3 ? vy / v : Math.sin(th);
+    const drag = 0.5 * RHOA * p.cd * Ab * v * v;
+    let ax = (thrust - drag) * dx / m, ay = (thrust - drag) * dy / m - G;
+    if (!launched && ay <= 0) {            // el cohete aún no despega
+      if (Vw <= 0) break;
+      vx = vy = 0; ax = ay = 0;
+    }
+    vx += ax * dt; vy += ay * dt; x += vx * dt; const yPrev = y; y += vy * dt; t += dt;
+    if (y > 0) launched = true;
+    if (launched && y < 0) {               // impacto: interpolar
+      const f = yPrev / (yPrev - y); x -= vx * dt * (1 - f); y = 0; t -= dt * (1 - f); impact = true;
+    }
+    if (y > hmax) { hmax = y; tApex = t; apex = { x, y }; }
+    vmax = Math.max(vmax, Math.hypot(vx, vy)); Fmax = Math.max(Fmax, thrust);
+    if (t - lastPush >= 0.02 || impact) { pts.push({ t, x, y, burn: Vw > 0 }); lastPush = t; }
+    if (impact) break;
+  }
+  const last = pts[pts.length - 1] || { t: 0, x: 0, y: 0 };
+  const burnPt = tBurn !== null ? pts.find(q => q.t >= tBurn) : null;
+  return { pts, hmax, tApex, tFlight: last.t, range: last.x, vmax, Fmax, tBurn: tBurn || 0, ve0, apex, burnPt, Vw0, clamped: p.Vw > 0.95 * Vb };
+}
+
+// ---------- UI ----------
+function Slider({ label, unit, v, min, max, set }) {
+  const [draft, setDraft] = useState(null);
+  const shown = draft !== null ? draft : String(Math.round(v * 100) / 100);
+  const onType = e => { const t = e.target.value; setDraft(t); const n = parseFloat(t); if (isFinite(n) && n >= min && n <= max) set(n); };
+  const commit = () => { if (draft === null) return; const n = parseFloat(draft); if (isFinite(n)) set(Math.min(max, Math.max(min, Math.round(n * 100) / 100))); setDraft(null); };
+  return h('div', { className: 'block mb-3' },
+    h('div', { className: 'flex items-center justify-between gap-2 text-sm mb-1' },
+      h('span', { className: 'text-slate-300' }, label),
+      h('span', { className: 'flex items-center gap-1' },
+        h('input', { type: 'number', step: '0.01', min, max, value: shown, onChange: onType, onBlur: commit,
+          onKeyDown: e => { if (e.key === 'Enter') e.target.blur(); },
+          className: 'mono w-20 rounded bg-slate-800 border border-slate-600 px-1.5 py-0.5 text-right text-sky-300 focus:outline-none focus:ring-1 focus:ring-sky-400' }),
+        h('span', { className: 'text-slate-400 text-xs w-8' }, unit))),
+    h('input', { type: 'range', className: 'w-full', min, max, step: 0.01, value: Math.min(max, Math.max(min, v)), onChange: e => { setDraft(null); set(parseFloat(e.target.value)); } }));
+}
+function Group({ title, color, children }) {
+  return h('section', { className: 'rounded-xl p-4 mb-4 bg-slate-900/70 border-l-4', style: { borderColor: color } },
+    h('h3', { className: 'font-bold mb-3', style: { color } }, title), children);
+}
+function Stat({ label, value, unit, color }) {
+  return h('div', { className: 'rounded-lg bg-slate-900/70 p-3' },
+    h('div', { className: 'text-xs text-slate-400' }, label),
+    h('div', { className: 'mono text-2xl font-bold', style: { color } }, value, h('span', { className: 'text-sm ml-1 text-slate-400' }, unit)));
+}
+function niceStep(r) { const e = Math.pow(10, Math.floor(Math.log10(r))); const f = r / e; return (f < 1.5 ? 1 : f < 3.5 ? 2 : f < 7.5 ? 5 : 10) * e; }
+
+function Chart({ r, tAnim, clk, theta }) {
+  const W = 820, H = 420, L = 56, B = 40, T = 24, R = 24;
+  const pw = W - L - R, ph = H - T - B;
+  const xmax = Math.max(r.range, 1) * 1.08, ymax = Math.max(r.hmax, 1) * 1.25;
+  const s = Math.min(pw / xmax, ph / ymax);
+  const X = x => L + x * s, Y = y => H - B - y * s;
+  const stepX = niceStep(Math.min(pw / s, 400) / 6), stepY = niceStep(Math.min(ph / s, 400) / 5);
+  const ticksX = [], ticksY = [];
+  for (let v = 0; v * s <= pw; v += stepX) ticksX.push(v);
+  for (let v = 0; v * s <= ph; v += stepY) ticksY.push(v);
+  const burnPts = r.pts.filter(q => q.burn), coastPts = r.pts.filter((q, i) => !q.burn || i === r.pts.findIndex(z => !z.burn));
+  const path = a => a.map((q, i) => (i ? 'L' : 'M') + X(q.x).toFixed(1) + ' ' + Y(q.y).toFixed(1)).join('');
+  let rocket = null, burning = false;
+  if (r.pts.length) {
+    const n = r.pts.length;
+    let i = tAnim === null ? 0 : r.pts.findIndex(z => z.t >= tAnim); if (i < 0) i = n - 1;
+    const a = r.pts[Math.max(0, i - 3)], b = r.pts[Math.min(n - 1, i + 3)];
+    const dx = (b.x - a.x) * s, dy = -(b.y - a.y) * s;
+    const ang = Math.abs(dx) + Math.abs(dy) < 1e-6 ? -theta : Math.atan2(dy, dx) * 180 / Math.PI;
+    rocket = { ...r.pts[i], ang };
+    burning = tAnim !== null && tAnim < r.tBurn;
+  }
+  const drops = [];
+  if (burning) for (let k = 0; k < 18; k++) {
+    const ph = (clk * 2.2 + k / 18) % 1, sp = ((k * 7) % 11) / 11 - 0.5;
+    drops.push(h('circle', { key: k, cx: -15 - ph * 36, cy: sp * ph * 22, r: 3.4 * (1 - ph) + 0.8, fill: k % 3 ? '#38bdf8' : '#bae6fd', opacity: 0.9 * (1 - ph) }));
+  }
+  const flip = r.apex.x * s > pw * 0.7;
+  return h('svg', { viewBox: `0 0 ${W} ${H}`, className: 'w-full rounded-xl', style: { background: 'linear-gradient(#10304f,#0b1a2b 85%)' } },
+    ticksY.map(v => h('g', { key: 'y' + v },
+      h('line', { x1: L, x2: W - R, y1: Y(v), y2: Y(v), stroke: '#1e3a5a', strokeWidth: 1 }),
+      h('text', { x: L - 8, y: Y(v) + 4, fill: '#8fa9c4', fontSize: 11, textAnchor: 'end' }, v))),
+    ticksX.map(v => h('g', { key: 'x' + v },
+      h('line', { x1: X(v), x2: X(v), y1: T, y2: H - B, stroke: '#1e3a5a', strokeWidth: 1 }),
+      h('text', { x: X(v), y: H - B + 16, fill: '#8fa9c4', fontSize: 11, textAnchor: 'middle' }, v))),
+    h('text', { x: W / 2, y: H - 6, fill: '#8fa9c4', fontSize: 12, textAnchor: 'middle' }, 'Distancia horizontal (m)'),
+    h('text', { x: 14, y: H / 2, fill: '#8fa9c4', fontSize: 12, textAnchor: 'middle', transform: `rotate(-90 14 ${H / 2})` }, 'Altura (m)'),
+    h('rect', { x: L, y: H - B, width: pw, height: 3, fill: '#4d7c3a' }),
+    h('path', { d: path(coastPts), fill: 'none', stroke: '#38bdf8', strokeWidth: 2.5 }),
+    h('path', { d: path(burnPts), fill: 'none', stroke: '#fb923c', strokeWidth: 4 }),
+    // altura máxima
+    h('line', { x1: X(r.apex.x), x2: X(r.apex.x), y1: Y(r.apex.y), y2: Y(0), stroke: '#facc15', strokeDasharray: '4 4' }),
+    h('circle', { cx: X(r.apex.x), cy: Y(r.apex.y), r: 6, fill: '#facc15' }),
+    h('text', { x: X(r.apex.x) + (flip ? -10 : 10), y: Y(r.apex.y) - 10, fill: '#facc15', fontSize: 13, fontWeight: 700, textAnchor: flip ? 'end' : 'start' }, `Altura máxima: ${r.hmax.toFixed(1)} m`),
+    // alcance
+    h('circle', { cx: X(r.range), cy: Y(0), r: 6, fill: '#f87171' }),
+    h('text', { x: Math.min(X(r.range), W - R - 4), y: Y(0) - 12, fill: '#f87171', fontSize: 13, fontWeight: 700, textAnchor: r.range * s > pw * 0.8 ? 'end' : 'middle' }, `Distancia de vuelo: ${r.range.toFixed(1)} m`),
+    r.burnPt && h('g', null,
+      h('circle', { cx: X(r.burnPt.x), cy: Y(r.burnPt.y), r: 4, fill: '#fb923c' }),
+      h('text', { x: X(r.burnPt.x) + 8, y: Y(r.burnPt.y) + 16, fill: '#fdba74', fontSize: 11 }, 'Fin del empuje')),
+    rocket && h('g', { transform: `translate(${X(rocket.x)} ${Y(rocket.y)}) rotate(${rocket.ang}) scale(1.3)` },
+      drops,
+      h('path', { d: 'M-6 -4 L-14 -11 L-14 -4Z', fill: '#ef4444' }),
+      h('path', { d: 'M-6 4 L-14 11 L-14 4Z', fill: '#ef4444' }),
+      h('path', { d: 'M18 0 C10 -6 -8 -6 -14 -4 L-14 4 C-8 6 10 6 18 0Z', fill: '#e2e8f0', stroke: '#94a3b8', strokeWidth: 0.8 }),
+      h('path', { d: 'M18 0 C14 -3 10 -4 8 -4.5 L8 4.5 C10 4 14 3 18 0Z', fill: '#ef4444' }),
+      h('circle', { cx: 0, cy: 0, r: 2.3, fill: '#38bdf8', stroke: '#475569', strokeWidth: 0.8 })),
+    h('g', { transform: `translate(${W - R - 150} ${T + 6})` },
+      h('rect', { width: 150, height: 44, rx: 6, fill: '#0b1a2b', opacity: 0.8 }),
+      h('line', { x1: 10, x2: 34, y1: 14, y2: 14, stroke: '#fb923c', strokeWidth: 4 }),
+      h('text', { x: 40, y: 18, fill: '#e6eef7', fontSize: 11 }, 'Propulsión (agua)'),
+      h('line', { x1: 10, x2: 34, y1: 32, y2: 32, stroke: '#38bdf8', strokeWidth: 3 }),
+      h('text', { x: 40, y: 36, fill: '#e6eef7', fontSize: 11 }, 'Vuelo libre y caída')));
+}
+
+function App() {
+  const [p, setP] = useState({ Vw: 0.7, P0: 300, Vb: 2.0, m: 0.15, D: 0.09, de: 0.022, cd: 0.4, theta: 60 });
+  const [tAnim, setTAnim] = useState(null);
+  const [clk, setClk] = useState(0);
+  const raf = useRef(null);
+  const set = k => v => { setP(o => ({ ...o, [k]: v })); setTAnim(null); };
+  const r = useMemo(() => simulate({ ...p, Vw: p.Vw / 1000 * 1000 * 0.001, Vb: p.Vb * 0.001, m: p.m, D: p.D, de: p.de, P0: p.P0 }), [p]);
+  useEffect(() => () => cancelAnimationFrame(raf.current), []);
+  const launch = () => {
+    cancelAnimationFrame(raf.current);
+    const start = performance.now(), tb = r.tBurn, realBurn = tb > 0 ? 1.5 : 0;
+    const speed = Math.max(1, (r.tFlight - tb) / 7);
+    const tick = now => {
+      const real = (now - start) / 1000;
+      const t = real < realBurn ? real / realBurn * tb : tb + (real - realBurn) * speed;
+      setClk(real);
+      if (t >= r.tFlight) { setTAnim(r.tFlight); return; }
+      setTAnim(t); raf.current = requestAnimationFrame(tick);
+    };
+    raf.current = requestAnimationFrame(tick);
+  };
+  const f = (v, d = 2) => v.toFixed(d);
+  return h('div', { className: 'max-w-6xl mx-auto p-4 md:p-6' },
+    h('header', { className: 'mb-5' },
+      h('h1', { className: 'text-3xl font-black tracking-tight text-sky-200' }, 'Simulador de cohete de agua'),
+      h('p', { className: 'text-slate-400 mt-1 max-w-2xl' }, 'Cambia los parámetros y mira cómo se transforma la trayectoria. Modelo hidrodinámico de Prusa (2000): Bernoulli para el agua, conservación de masa y segunda ley de Newton.')),
+    h('div', { className: 'grid lg:grid-cols-[340px_1fr] gap-5' },
+      h('div', null,
+        h(Group, { title: 'Agua y presión', color: '#38bdf8' },
+          h(Slider, { label: 'Volumen de agua (Vw)', unit: 'L', v: p.Vw, min: 0.1, max: 2.0, step: 0.05, set: set('Vw') }),
+          h(Slider, { label: 'Presión manométrica inicial (P₀)', unit: 'kPa', v: p.P0, min: 100, max: 400, step: 10, set: set('P0') }),
+          r.clamped && h('p', { className: 'text-xs text-amber-300' }, 'El agua ocupa casi toda la botella; se limita al 95 % del volumen para dejar aire.')),
+        h(Group, { title: 'Estructura del cohete', color: '#fb923c' },
+          h(Slider, { label: 'Volumen de la botella', unit: 'L', v: p.Vb, min: 1, max: 3, step: 0.25, set: set('Vb') }),
+          h(Slider, { label: 'Masa del cohete vacío', unit: 'kg', v: p.m, min: 0.05, max: 0.6, step: 0.01, set: set('m') }),
+          h(Slider, { label: 'Diámetro de la botella', unit: 'mm', v: p.D * 1000, min: 60, max: 120, step: 1, set: v => set('D')(v / 1000) }),
+          h(Slider, { label: 'Diámetro de la boquilla', unit: 'mm', v: p.de * 1000, min: 5, max: 30, step: 0.5, set: v => set('de')(v / 1000) }),
+          h('p', { className: 'text-xs text-slate-400 mb-3 mono' }, `Área de boquilla Ae = ${f(Math.PI * (p.de * 500) ** 2, 1)} mm²`),
+          h(Slider, { label: 'Coeficiente de arrastre (Cd)', unit: '', v: p.cd, min: 0.2, max: 0.9, step: 0.05, set: set('cd') })),
+        h(Group, { title: 'Lanzamiento', color: '#a3e635' },
+          h(Slider, { label: 'Ángulo de lanzamiento (θ)', unit: '°', v: p.theta, min: 10, max: 90, step: 1, set: set('theta') }),
+          h('button', { onClick: launch, className: 'w-full rounded-lg bg-orange-500 hover:bg-orange-400 text-slate-900 font-bold py-2 transition-colors focus:outline-none focus:ring-2 focus:ring-white' }, 'Lanzar y animar'), h('p', { className: 'text-xs text-slate-400 mt-2' }, 'La fase de propulsión se reproduce en cámara lenta.'))),
+      h('div', null,
+        h('div', { className: 'grid grid-cols-2 md:grid-cols-3 gap-3 mb-4' },
+          h(Stat, { label: 'Altura máxima', value: f(r.hmax, 1), unit: 'm', color: '#facc15' }),
+          h(Stat, { label: 'Distancia de vuelo', value: f(r.range, 1), unit: 'm', color: '#f87171' }),
+          h(Stat, { label: 'Tiempo total de vuelo', value: f(r.tFlight, 2), unit: 's', color: '#38bdf8' }),
+          h(Stat, { label: 'Tiempo hasta la altura máxima', value: f(r.tApex, 2), unit: 's', color: '#a3e635' }),
+          h(Stat, { label: 'Duración del empuje', value: f(r.tBurn, 3), unit: 's', color: '#fb923c' }),
+          h(Stat, { label: 'Velocidad máxima', value: f(r.vmax, 1), unit: 'm/s', color: '#c4b5fd' })),
+        h(Chart, { r, tAnim, clk, theta: p.theta }),
+        h('div', { className: 'rounded-xl bg-slate-900/70 p-4 mt-4 text-sm text-slate-300 leading-relaxed' },
+          h('h3', { className: 'font-bold text-sky-200 mb-2' }, 'Qué calcula el simulador'),
+          h('p', { className: 'mb-2' }, h('b', null, 'Fase 1, propulsión. '), 'El aire se expande de forma adiabática: P = P₀·(Va₀/Va)^γ. Con Bernoulli, la velocidad de salida del agua es ', h('span', { className: 'mono' }, 've = √(2(P − Patm) / (ρ(1 − (Ae/Ab)²)))'), '. El volumen de agua baja según ', h('span', { className: 'mono' }, 'dVw/dt = −Ae·ve'), ' y el empuje es ', h('span', { className: 'mono' }, 'T = ρ·Ae·ve²'), '.'),
+          h('p', { className: 'mb-2' }, 'La aceleración sale del balance de fuerzas con masa variable: ', h('span', { className: 'mono' }, 'm(t)·a = T − Fd − m·g'), ', con ', h('span', { className: 'mono' }, 'Fd = ½·ρaire·Cd·Ab·v²'), '.'),
+          h('p', null, h('b', null, 'Fase 2, vuelo libre. '), 'Cuando se agota el agua, T = 0 y el cohete sigue como proyectil con peso y arrastre hasta tocar el suelo. Velocidad inicial de salida: ', h('span', { className: 'mono text-sky-300' }, f(r.ve0, 1) + ' m/s'), '; empuje máximo: ', h('span', { className: 'mono text-orange-300' }, f(r.Fmax, 0) + ' N'), '.')))));
+}
+ReactDOM.createRoot(document.getElementById('root')).render(h(App));
+</script>
+</body>
+</html>
